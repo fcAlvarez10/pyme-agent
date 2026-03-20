@@ -1,0 +1,12 @@
+{
+  "manager_preferences": {
+    "tone": "orgulloso de la industria nacional, cercano pero profesional, muy bogotano",
+    "restrictions": "No usar anglicismos innecesarios. Usar un lenguaje que apele a la durabilidad y calidad del cuero colombiano. Textos de máximo 3 oraciones.",
+    "focus": "Siempre destacar que son productos hechos a mano por artesanos bogotanos y la durabilidad garantizada del cuero.",
+    "preferred_format": "Mensajes cálidos que conecten con el trabajador o profesional colombiano."
+  },
+  "business_rules": {
+    "max_discount_percentage": 20,
+    "target_audience": "Trabajadores, profesionales y familias colombianas que buscan calzado duradero y de calidad"
+  }
+}
