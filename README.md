@@ -255,7 +255,6 @@ graph = builder.compile(
 )
 ```
 
-> *(Nota para el presentador: Al correr `langgraph dev`, el `interrupt_before` detendrá el flujo y el grafo se visualizará así)*
 > ![Grafo de LangGraph Studio](docs/assets/grafo_agente.png)
 
 ### Paso 7: Evaluación y Control de Calidad (LLM-as-a-judge)
@@ -273,7 +272,6 @@ Responde ÚNICAMENTE con un JSON: {"score": <0.0 a 1.0>, "comentario": "<tu expl
 """
 ```
 
-> *(Nota para el presentador: Insertar captura del panel de trazas y evaluación de LangSmith)*
 > ![LangSmith Traces](docs/assets/langsmith_traces.png)
 
 ---
