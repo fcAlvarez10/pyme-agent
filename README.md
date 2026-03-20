@@ -50,167 +50,231 @@ Para entender cómo funciona nuestro sistema en el fondo, primero debemos defini
 
 ---
 
-## 3. La Metodología: Stack Tecnológico y Construcción
+## 3. La Metodología: Arquitectura y Stack Tecnológico
 
-Antes de ver la implementación específica, es vital entender el flujo de trabajo estándar que usa un ingeniero de IA para construir un ecosistema agéntico desde cero, utilizando herramientas de vanguardia.
+Antes de ver la implementación específica, es vital entender las herramientas que usamos y el ciclo de vida general para construir un ecosistema agéntico desde cero.
 
 ### El Stack Tecnológico Base
 *   **Orquestación:** LangGraph (para manejar la gestión de estado, los grafos de enrutamiento cíclico y la persistencia).
 *   **Modelos y Abstracción:** LangChain como framework integrador y un Modelo de Lenguaje Fundacional (ej. Gemini, GPT, Claude) como el motor cognitivo.
-*   **Protocolos Estándar:** MCP (Model Context Protocol) y frameworks como FastMCP para empaquetar bases de datos y lógica de negocio en servidores seguros y aislados.
-*   **Observabilidad:** LangSmith o similares para la telemetría y el rastreo (tracing) de cada ejecución paso a paso.
-*   **Gestión de Dependencias:** uv para un empaquetado y resolución de entornos virtuales extremadamente rápida en Python.
+*   **Protocolos Estándar:** MCP (Model Context Protocol) para empaquetar bases de datos y lógica de negocio en servidores seguros y aislados.
+*   **Observabilidad:** LangSmith para la telemetría y el rastreo (tracing) de cada ejecución.
+*   **Gestión de Dependencias:** uv para un empaquetado extremadamente rápido en Python.
 
-### El Paso a Paso: Cómo construir un Agente
-Para desarrollar una arquitectura multi-agente de nivel empresarial, la metodología recomendada sigue estos 6 pasos:
+### Visión General del Proceso (El Ciclo de Vida del Agente)
+Para desarrollar una arquitectura multi-agente de nivel empresarial, la metodología sigue este ciclo estructurado, que detallaremos a nivel de código en la siguiente sección:
 
-1.  **Scaffolding e Inicialización:** Iniciar un proyecto estructurado usando plantillas oficiales (ej. langgraph-cli project create), configurando el entorno y las variables necesarias.
-2.  **Definición del Cerebro y el Estado:** Diseñar la clase State (el esquema de variables que viajan entre los nodos) y programar el nodo de razonamiento principal que inyecta el System Prompt y se comunica con el LLM.
-3.  **Aislamiento de Herramientas (Grounding):** En lugar de otorgar acceso directo a bases de datos en el código del LLM, se levanta un servidor backend que expone funciones estandarizadas (API o MCP). El agente descubre y se conecta a estas herramientas dinámicamente.
-4.  **Inyección de Memoria y Checkpoints:** Configurar un almacén para el conocimiento a largo plazo (archivos locales, bases vectoriales) y activar un Checkpointer nativo (como SQLite o Postgres) en el orquestador para guardar la sesión paso a paso y permitir el Time-Travel (volver atrás en el tiempo).
-5.  **Interrupciones y Colaboración:** Configurar nodos de parada (interrupt_before) para forzar la aprobación humana antes de acciones destructivas (Guardrails), y programar llamadas de red estructuradas para delegar tareas a agentes de otros dominios u organizaciones (Agent-to-Agent).
-6.  **Observabilidad y Pruebas Continuas:** Activar el registro de trazas en la nube para debugear flujos complejos, y automatizar la calidad escribiendo scripts de integración que utilicen otros modelos LLM como jueces evaluadores para medir el cumplimiento estricto de las reglas.
-
-> *Ya sabemos qué problema queremos resolver, qué teoría lo sustenta y qué herramientas usar. Ahora veamos exactamente cómo se programó esto paso a paso para la fábrica de calzado.*
+1.  **Definir el Estado (State):** Crear la estructura de memoria que viajará entre los pasos del agente.
+2.  **Conectar el Conocimiento (Herramientas/Tools):** Exponer funciones seguras (APIs, bases de datos) al agente.
+3.  **Configurar el Cerebro (Modelo y Prompt):** Instanciar el LLM, inyectar las reglas de negocio (System Prompt) y entregarle las herramientas.
+4.  **Crear los Nodos de Acción (Físicos):** Definir quién y cómo ejecuta físicamente las decisiones del cerebro.
+5.  **Programar el Enrutamiento (ReAct):** Establecer la lógica condicional de qué hacer después de que el cerebro piensa.
+6.  **Ensamblar el Grafo (Edges):** Unir todos los nodos en un flujo de trabajo (Workflow) y compilarlo con reglas de seguridad.
+7.  **Evaluar (Pruebas Automatizadas):** Validar el comportamiento no determinista usando otros LLMs como jueces.
 
 ---
 
-## 4. Del Concepto al Código: Implementación en Calzados La Sabana
+## 4. Guía Paso a Paso: Construyendo el Agente desde el Código
 
-A continuación, mostramos cómo los 7 pilares descritos anteriormente se mapean e implementan de forma exacta en el código fuente de nuestro repositorio.
+A continuación, mostramos cómo los 7 pasos descritos en la metodología se implementan exactamente en el código fuente de Calzados La Sabana. El objetivo es que sirva como una guía para construir un agente siguiendo nuestro código base.
 
-### Pilares I y II: Fundamentos y Razonamiento (El Cerebro ReAct)
-**Teoría:** Instanciamos el pilar del cerebro usando un modelo analítico (System 2) dentro de un bucle de enrutamiento constante, permitiéndole ejercer racionalidad y decidir cuándo actuar y cuándo terminar.
-**Implementación:** Todo esto se consolida en un Grafo Dirigido mediante LangGraph en [`src/agent/graph.py`](src/agent/graph.py). Observa el flujo condicional que orquesta el bucle de razonamiento:
+### Paso 1: Definir el Estado (State) y la Configuración
+*   **Qué es:** El "Estado" es la memoria compartida que viaja a través del grafo. Cada nodo lee este estado y devuelve actualizaciones sobre el mismo.
+*   **Implementación:** En `src/agent/state.py` definimos `AgentState` heredando de `MessagesState` (nativo de LangGraph para guardar el historial de chat de forma automática) y agregamos variables extra.
 
 ```python
-# Extracto de src/agent/graph.py
-def route_after_model(state: AgentState) -> Literal["human_review", "execute_tools", "__end__"]:
-    """Routing ReAct: Decide la siguiente acción tras el razonamiento del LLM."""
-    last_message = state["messages"][-1]
-    
-    # Si no hay llamadas a herramientas (Action), el agente terminó su tarea
-    if not last_message.tool_calls:
-        return "__end__"
-    
-    # Evalúa el tipo de herramienta solicitada
-    for tc in last_message.tool_calls:
-        if tc["name"] == "send_to_agency":
-            return "human_review" # Requiere aprobación (Guardrail)
-            
-    # Ejecuta herramientas internas
-    return "execute_tools"
+# Extracto de src/agent/state.py
+from langgraph.graph import MessagesState
+from typing import Optional
 
-# Construcción del Bucle ReAct
-builder = StateGraph(AgentState, config_schema=Configuration)
-builder.add_node("agent", call_model) # Nivel cognitivo (Pensamiento)
-builder.add_node("execute_tools", call_tools) # Nivel de actuación
-builder.add_edge("execute_tools", "agent") # Bucle de vuelta a la Observación
+class AgentState(MessagesState):
+    """Estado central para el Agente de Campañas."""
+    # human_approved se usa para controlar la pausa de seguridad (Guardrail)
+    human_approved: Optional[bool] 
 ```
 
-> `![Grafo de LangGraph Studio](docs/assets/grafo_agente.png)`
+### Paso 2: Crear y Conectar las Herramientas (Grounding)
+*   **Qué es:** Dotar al agente de "manos" para que pueda interactuar con el entorno real. Antes de poder usarlas, debemos crearlas y exponerlas.
+*   **Implementación:** 
+    1. **Creación de Herramientas Remotas (MCP):** En `src/mcp_server.py`, usamos el decorador `@mcp.tool()` para encapsular de forma segura la lógica de negocio (como el acceso a `pyme.db`) en un servidor totalmente aislado.
+    2. **Creación de Herramientas Locales:** Definimos funciones Python directamente en el código del agente decoradas con `@tool` (ej. `send_to_agency` para la comunicación A2A con otros agentes).
+    3. **Conexión y Descubrimiento:** En `src/agent/graph.py`, el agente se conecta dinámicamente al servidor MCP, solicita la lista de herramientas remotas disponibles y las une con sus herramientas locales.
 
-### Pilar III: Sistema de Memoria y Contexto
-**Teoría:** Separamos la memoria activa de la histórica para hacer al agente eficiente.
-**Implementación:** 
-1.  **Memoria Episódica:** El agente extrae a largo plazo las preferencias del gerente desde un archivo JSON local (`memory.json`) usando el servidor backend en [`src/mcp_server.py`](src/mcp_server.py):
-    ```python
-    @mcp.tool()
-    def get_manager_preferences() -> str:
-        """Extrae la memoria episódica: reglas de marca y preferencias."""
-        memory_path = get_memory_path() # Lee memory.json
-        with open(memory_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return json.dumps(data)
-    ```
-2.  **Memoria de Trabajo (Checkpointer):** Para la memoria a corto plazo, LangGraph Studio inyecta automáticamente un Checkpointer (base de datos SQLite). Esto guarda la sesión completa (el `AgentState`), permitiendo el Time-Travel y la reanudación de hilos ante interrupciones.
-
-### Pilar IV: Grounding y Herramientas (MCP)
-**Teoría:** Por seguridad, no inyectamos la conexión de base de datos directamente en el código del LLM. Utilizamos el estándar de la industria Model Context Protocol (MCP) para separar el cerebro de las herramientas.
-**Implementación:** En [`src/agent/graph.py`](src/agent/graph.py), el agente usa el cliente MCP para conectarse vía Server-Sent Events (SSE) a un proceso completamente aislado que alberga `pyme.db`.
+**1. Creación de las Herramientas**
 ```python
-# Extracto de src/agent/graph.py
-async def get_all_tools(config: RunnableConfig):
-    """Obtiene dinámicamente las herramientas expuestas por el Servidor MCP."""
-    url = configurable.mcp_server_url # Ej: http://127.0.0.1:8001/sse
-    
-    client = MultiServerMCPClient({
-        "pyme_backend": {
-            "transport": "sse",
-            "url": url,
-        }
-    })
-    mcp_tools = await client.get_tools() # Descubre las herramientas de datos
-    return mcp_tools + [send_to_agency]
-```
-
-### Pilar V: Reflexión y Autocorrección
-**Teoría:** Un sistema resiliente no cae ante excepciones; las lee y se ajusta automáticamente.
-**Implementación:** Si el agente pide más de 20% de descuento, el servidor MCP en [`src/mcp_server.py`](src/mcp_server.py) no lanza un error de código fatal, sino un texto descriptivo. El agente lee esta Observación, razona su equivocación, y vuelve a intentar la herramienta con 20%.
-```python
-# Extracto de src/mcp_server.py
+# Herramienta Remota (Extracto de src/mcp_server.py)
 @mcp.tool()
 def calculate_budget(product_name: str, discount_percentage: float) -> str:
-    """Calcula el presupuesto. Retorna feedback textual si viola política."""
+    """Calcula el presupuesto. Retorna feedback textual si viola política corporativa."""
     if discount_percentage > 20:
-        # Esto dispara el mecanismo de Reflexión del Agente
+        # Retornar un error descriptivo en lugar de romper el código dispara el mecanismo de Reflexión del Agente.
         return (
             "Error de política corporativa: El descuento máximo permitido es del 20%. "
             f"Un descuento del {discount_percentage}% genera un margen negativo inaceptable para '{product_name}'. "
             "Reflexiona sobre tu estrategia y vuelve a llamar a la herramienta con un descuento válido."
         )
-    # Lógica de aprobación...
-```
+    
+    # Lógica simplificada de presupuesto
+    return json.dumps({
+        "status": "success", 
+        "approved_budget": 500.0 + ((20 - discount_percentage) * 10)
+    })
 
-### Pilar VI: Orquestación Multi-Agente y Protocolo A2A
-**Teoría:** Para escalar la automatización más allá de las fronteras de una empresa, los agentes se delegan tareas entre sí mediante protocolos estándar de comunicación.
-**Implementación:** Nuestro agente interno (`graph.py`) usa un llamado HTTP estructurado (Protocolo A2A) para delegar la planificación visual a un Agente Externo (`agency_agent.py`), demostrando colaboración inter-empresarial descentralizada.
-```python
-# Extracto de src/agent/graph.py
+# Herramienta Local (Extracto de src/agent/graph.py)
 @tool
 async def send_to_agency(product: str, text: str, discount: float, budget: float, config: RunnableConfig) -> str:
-    """Envía la campaña vía protocolo A2A al agente de la agencia publicitaria externa."""
+    """Envía la campaña vía protocolo A2A al agente de la agencia externa."""
     client = await ClientFactory.connect(
-        agent=configurable.a2a_agent_url, # Ej: http://127.0.0.1:8000
+        agent=configurable.a2a_agent_url,
         client_config=ClientConfig(streaming=True, httpx_client=httpx.AsyncClient(timeout=60.0)),
     )
     message = create_text_message_object(content=f"Campaña: {product}...")
     async for event in client.send_message(message):
-        # Recibe de vuelta los hashtags y el media mix calculados por la agencia
+        # Escucha y guarda los eventos/respuestas del agente remoto
         pass 
+        
+    return "Campaña enviada exitosamente."
 ```
 
-### Pilar VII: Evaluación, Producción y Guardrails
-**Teoría:** La seguridad operativa requiere pausas antes de gastar presupuesto. A su vez, medir un sistema estocástico (impredecible) requiere de otros LLMs para calificar objetivamente el desempeño.
-**Implementación de Guardrails:** Detenemos el grafo explícitamente en [`src/agent/graph.py`](src/agent/graph.py) exigiendo que un humano valide.
+**2. Conexión y Descubrimiento desde el Agente**
 ```python
-# El grafo se pausa en seco y espera la aprobación humana en LangGraph Studio
+# Extracto de src/agent/graph.py
+async def get_all_tools(config: RunnableConfig):
+    """Obtiene dinámicamente las herramientas expuestas por el Servidor MCP y las une a las locales."""
+    url = configurable.mcp_server_url
+    
+    # Se conecta al servidor backend aislado MCP usando SSE
+    client = MultiServerMCPClient({
+        "pyme_backend": { "transport": "sse", "url": url }
+    })
+    
+    # El agente descubre BBDD, preferencias, calculadoras de presupuesto, etc.
+    mcp_tools = await client.get_tools() 
+    
+    # Devuelve el pool completo de herramientas al Cerebro del Agente
+    return mcp_tools + [send_to_agency]
+```
+
+### Paso 3: El Nodo Cognitivo (Cerebro, Modelos y el System Prompt)
+*   **Qué es:** El nodo principal que razona. Instancia el modelo, inyecta las instrucciones base y vincula las herramientas para que el LLM sepa que existen (`bind_tools`).
+*   **Implementación:** En `call_model` (`src/agent/graph.py`), revisamos si ya existe un `SystemMessage` en el estado. Si no, **establecemos e inyectamos el prompt** (con el SOP o Procedimiento Operativo Estándar) al inicio de la lista de mensajes antes de invocar al modelo.
+
+```python
+# Extracto de src/agent/graph.py
+async def call_model(state: AgentState, config: RunnableConfig):
+    # 1. Configurar el Modelo
+    llm = ChatVertexAI(model_name="gemini-1.5-pro", temperature=0.0)
+    
+    # 2. Vincular las herramientas disponibles
+    all_tools = await get_all_tools(config)
+    llm_with_tools = llm.bind_tools(all_tools)
+    
+    # 3. Establecer e inyectar el System Prompt
+    messages = state.get("messages", [])
+    if not any(isinstance(m, SystemMessage) for m in messages):
+        sys_msg = SystemMessage(content=(
+            "Eres el agente inteligente y autónomo de Calzados La Sabana S.A.S.\n"
+            "DEBES ejecutar proactivamente el siguiente SOP:\n"
+            "Paso 1: Obtén las preferencias del gerente.\n"
+            "Paso 2: Lee la BBDD y escoge el producto estratégico.\n"
+            "Paso 3: Calcula presupuesto. Si fallas por políticas, corrige tu error.\n"
+            "Paso 4: Redacta el texto de campaña.\n"
+            "Paso 5: Envía la campaña a la agencia externa."
+        ))
+        # Inyectamos el prompt al inicio de la conversación
+        messages = [sys_msg] + messages 
+    
+    # 4. Invocar al modelo con el estado actualizado
+    response = await llm_with_tools.ainvoke(messages)
+    return {"messages": [response]} # LangGraph agregará este mensaje al estado
+```
+
+### Paso 4: Crear los Nodos Físicos de Acción y Pausa
+*   **Qué es:** Nodos que no "piensan", solo ejecutan mecánicamente las decisiones del LLM o detienen el flujo.
+*   **Implementación:** Usamos `ToolNode` (una utilidad preconstruida de LangGraph) para ejecutar las herramientas, y un nodo manual de pausa de seguridad.
+
+```python
+# Extracto de src/agent/graph.py
+async def call_tools(state: AgentState, config: RunnableConfig):
+    """Nodo físico que ejecuta la herramienta pedida por el LLM."""
+    all_tools = await get_all_tools(config)
+    tool_node = ToolNode(all_tools)
+    result = await tool_node.ainvoke(state, config)
+    return {"messages": result["messages"]}
+
+async def human_review(state: AgentState, config: RunnableConfig):
+    """Nodo de pausa (Guardrail) para requerir revisión humana."""
+    return {"human_approved": None}
+```
+
+### Paso 5: Programar el Enrutamiento Lógico (Bucle ReAct)
+*   **Qué es:** Tras cada salida del "Cerebro", necesitamos un enrutador condicional (Edge) que decida qué ruta tomar.
+*   **Implementación:** Leemos el último mensaje generado por el LLM en el estado y observamos su atributo `tool_calls`.
+
+```python
+# Extracto de src/agent/graph.py
+def route_after_model(state: AgentState) -> Literal["human_review", "execute_tools", "__end__"]:
+    last_message = state["messages"][-1]
+    
+    # Caso 1: Si no pidió usar herramientas, el agente terminó
+    if not last_message.tool_calls:
+        return "__end__"
+    
+    # Caso 2: Si quiere gastar dinero (send_to_agency), fuerza revisión humana
+    for tc in last_message.tool_calls:
+        if tc["name"] == "send_to_agency":
+            return "human_review"
+            
+    # Caso 3: Para consultar datos internos, ejecutar directamente
+    return "execute_tools"
+```
+
+### Paso 6: Ensamblar y Compilar el Grafo (Edges y Guardrails)
+*   **Qué es:** Juntar todas las piezas (nodos) creadas anteriormente y trazar las rutas (Edges) entre ellos para formar el flujo de trabajo final.
+*   **Implementación:** En `src/agent/graph.py` declaramos un `StateGraph`, añadimos los nodos y configuramos los enlaces (saltos incondicionales y condicionales).
+
+```python
+# Extracto de src/agent/graph.py
+builder = StateGraph(AgentState, config_schema=Configuration)
+
+# 1. Agregar Nodos al Grafo
+builder.add_node("agent", call_model) # El Cerebro
+builder.add_node("human_review", human_review) # La Pausa
+builder.add_node("execute_tools", call_tools) # La Acción física
+
+# 2. Conectar las aristas (Edges)
+builder.add_edge(START, "agent") # Inicio
+builder.add_conditional_edges("agent", route_after_model) # Enrutador dinámico (Paso 5)
+builder.add_edge("human_review", "execute_tools") # Tras aprobar, ejecuta
+builder.add_edge("execute_tools", "agent") # Bucle (ReAct): vuelve a pensar tras actuar
+
+# 3. Compilar el grafo inyectando seguridad en tiempo de ejecución
 graph = builder.compile(
-    interrupt_before=["human_review"],
+    interrupt_before=["human_review"], # Se detiene EXACTAMENTE antes de este nodo
     name="ReAct Marketing Agent",
 )
 ```
 
-> *(Nota para el presentador: Insertar captura de pantalla de la pausa de Human-in-the-loop en LangGraph Studio)*
-> `![Human in the Loop](docs/assets/human_in_loop.png)`
+> *(Nota para el presentador: Al correr `langgraph dev`, el `interrupt_before` detendrá el flujo y el grafo se visualizará así)*
+> ![Grafo de LangGraph Studio](docs/assets/grafo_agente.png)
 
-**Implementación de Evaluación (LLM-as-a-judge):** En [`tests/test_accuracy_llm_as_judge.py`](tests/test_accuracy_llm_as_judge.py), delegamos el aseguramiento de calidad (QA) a un modelo de IA parametrizado como juez estricto.
+### Paso 7: Evaluación y Control de Calidad (LLM-as-a-judge)
+*   **Qué es:** Dado que el agente genera respuestas no predecibles (estocásticas), debemos usar un modelo evaluador para hacer pruebas unitarias o de calidad (QA).
+*   **Implementación:** En `tests/test_accuracy_llm_as_judge.py`, utilizamos otro LLM estricto como "juez" para asegurar que el agente aplicó el descuento y respetó el tono de voz en su output final.
+
 ```python
 # Extracto de tests/test_accuracy_llm_as_judge.py
 PROMPT_LLM_AS_JUDGE = """
 Eres un juez experto evaluando a un Agente de Inteligencia Artificial.
-Pregunta del usuario: {input}
-Contexto de evaluación: {contexto_evaluador}
 Salida del agente: {output}
 
 Evalúa si el agente cumplió con las restricciones (corrigió descuento a <= 20%, tono bogotano, etc.).
-Responde ÚNICAMENTE con un JSON con la estructura:
-{"score": <0.0 a 1.0>, "comentario": "<tu explicación>"}
+Responde ÚNICAMENTE con un JSON: {"score": <0.0 a 1.0>, "comentario": "<tu explicación>"}
 """
 ```
 
 > *(Nota para el presentador: Insertar captura del panel de trazas y evaluación de LangSmith)*
-> `![LangSmith Traces](docs/assets/langsmith_traces.png)`
+> ![LangSmith Traces](docs/assets/langsmith_traces.png)
 
 ---
 
